@@ -25,7 +25,10 @@ def init_db():
             name TEXT NOT NULL,
             role TEXT NOT NULL CHECK(role IN ('student', 'teacher')),
             grade_class TEXT,
-            student_id TEXT,
+            student_number TEXT,
+            hint_question TEXT,
+            hint_answer_hash TEXT,
+            remember_token TEXT,
             created_at TEXT NOT NULL
         )
     """)
@@ -96,6 +99,20 @@ def init_db():
         )
     """)
 
+    # 기존에 만들어진 app.db에 새 컬럼이 없다면 추가 (마이그레이션)
+    existing_cols = {row["name"] for row in c.execute("PRAGMA table_info(users)").fetchall()}
+    for col_def in [
+        ("student_number", "TEXT"),
+        ("hint_question", "TEXT"),
+        ("hint_answer_hash", "TEXT"),
+        ("remember_token", "TEXT"),
+    ]:
+        if col_def[0] not in existing_cols:
+            try:
+                c.execute(f"ALTER TABLE users ADD COLUMN {col_def[0]} {col_def[1]}")
+            except sqlite3.OperationalError:
+                pass
+
     conn.commit()
     conn.close()
 
@@ -110,12 +127,14 @@ def now_str() -> str:
 
 # ---------- users ----------
 
-def create_user(username, password, name, role, grade_class, student_id=None):
+def create_user(username, password, name, role, grade_class, student_number, hint_question, hint_answer):
     conn = get_conn()
     try:
         conn.execute(
-            "INSERT INTO users (username, password_hash, name, role, grade_class, student_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (username, hash_password(password), name, role, grade_class, student_id, now_str()),
+            """INSERT INTO users (username, password_hash, name, role, grade_class, student_number, hint_question, hint_answer_hash, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (username, hash_password(password), name, role, grade_class, student_number,
+             hint_question, hash_password(hint_answer) if hint_answer else None, now_str()),
         )
         conn.commit()
         return True, "가입이 완료되었습니다."
@@ -133,6 +152,53 @@ def authenticate(username, password):
     ).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def get_user_by_username(username):
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def check_hint_answer(username, answer):
+    user = get_user_by_username(username)
+    if not user or not user.get("hint_answer_hash"):
+        return False
+    return user["hint_answer_hash"] == hash_password(answer)
+
+
+def reset_password(username, new_password):
+    conn = get_conn()
+    conn.execute(
+        "UPDATE users SET password_hash = ? WHERE username = ?",
+        (hash_password(new_password), username),
+    )
+    conn.commit()
+    conn.close()
+
+
+def set_remember_token(user_id, token):
+    conn = get_conn()
+    conn.execute("UPDATE users SET remember_token = ? WHERE id = ?", (token, user_id))
+    conn.commit()
+    conn.close()
+
+
+def get_user_by_token(token):
+    if not token:
+        return None
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM users WHERE remember_token = ?", (token,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def clear_remember_token(user_id):
+    conn = get_conn()
+    conn.execute("UPDATE users SET remember_token = NULL WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
 
 
 # ---------- videos ----------
@@ -171,7 +237,7 @@ def get_approved_videos(category=None):
 def get_pending_videos():
     conn = get_conn()
     rows = conn.execute(
-        """SELECT v.*, u.name AS uploader_name, u.grade_class AS uploader_class, u.student_id AS uploader_student_id
+        """SELECT v.*, u.name AS uploader_name, u.grade_class AS uploader_class, u.student_number AS uploader_student_number
            FROM videos v JOIN users u ON v.uploader_id = u.id
            WHERE v.status = 'pending'
            ORDER BY v.created_at ASC"""

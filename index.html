@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  html, body { margin: 0; padding: 0; }
+  #player { width: 100%; }
+</style>
+</head>
+<body>
+<div id="player"></div>
+<script>
+  // ---- Streamlit Components 프로토콜 (npm/React 없이 순수 JS로 구현) ----
+  function sendToStreamlit(type, extra) {
+    window.parent.postMessage(Object.assign({
+      isStreamlitMessage: true,
+      type: type
+    }, extra), "*");
+  }
+
+  function setComponentValue(value) {
+    sendToStreamlit("streamlit:setComponentValue", { value: value, dataType: "json" });
+  }
+
+  function setFrameHeight(height) {
+    sendToStreamlit("streamlit:setFrameHeight", { height: height });
+  }
+
+  sendToStreamlit("streamlit:componentReady", { apiVersion: 1 });
+  setFrameHeight(380);
+
+  // ---- 유튜브 IFrame API 로드 ----
+  var tag = document.createElement('script');
+  tag.src = "https://www.youtube.com/iframe_api";
+  var firstScriptTag = document.getElementsByTagName('script')[0];
+  firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+
+  var player = null;
+  var currentVideoId = null;
+  var maxPercent = 0;
+  var pollTimer = null;
+
+  function onYouTubeIframeAPIReady() {
+    window.__ytApiReady = true;
+    tryCreatePlayer();
+  }
+
+  var pendingVideoId = null;
+
+  function tryCreatePlayer() {
+    if (!window.__ytApiReady || !pendingVideoId) return;
+    if (player) {
+      player.loadVideoById(pendingVideoId);
+      currentVideoId = pendingVideoId;
+      maxPercent = 0;
+      return;
+    }
+    currentVideoId = pendingVideoId;
+    player = new YT.Player('player', {
+      height: '360',
+      width: '100%',
+      videoId: pendingVideoId,
+      playerVars: { origin: window.location.origin },
+      events: {
+        'onReady': function () {
+          if (pollTimer) clearInterval(pollTimer);
+          pollTimer = setInterval(checkProgress, 3000);
+        },
+        'onStateChange': function (event) {
+          if (event.data === YT.PlayerState.ENDED) {
+            maxPercent = 100;
+            reportProgress();
+          }
+        }
+      }
+    });
+  }
+
+  function checkProgress() {
+    if (!player || typeof player.getDuration !== 'function') return;
+    var duration = player.getDuration();
+    var current = player.getCurrentTime();
+    if (!duration || duration <= 0) return;
+    var percent = Math.min(100, Math.round((current / duration) * 100));
+    if (percent > maxPercent) {
+      maxPercent = percent;
+      reportProgress();
+    }
+  }
+
+  function reportProgress() {
+    setComponentValue({ video_id: currentVideoId, percent: maxPercent });
+  }
+
+  window.addEventListener("message", function (event) {
+    var data = event.data;
+    if (!data || data.type !== "streamlit:render") return;
+    var args = data.args || {};
+    var videoId = args.video_id;
+    if (videoId && videoId !== currentVideoId) {
+      pendingVideoId = videoId;
+      tryCreatePlayer();
+    }
+  });
+</script>
+</body>
+</html>
